@@ -7,7 +7,6 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/dgrr/websocket"
@@ -62,15 +61,37 @@ func dataHandler(conn *websocket.Conn, isBin bool, data []byte) {
 			err := createOffer(msg, conn)
 			if err != nil {
 				conn.CloseDetail(websocket.StatusProtocolError, err.Error())
+				log.Print(err)
 			}
 		}()
+		break
 	case connectionRequestType:
 		go func() {
-			err := createConnReq(msg, conn)
+			err := processConnReq(msg, conn)
 			if err != nil {
 				conn.CloseDetail(websocket.StatusProtocolError, fmt.Sprintf("error: %s", err))
+				log.Print(err)
 			}
 		}()
+		break
+	case answerType:
+		go func() {
+			err := processAnswer(msg)
+			if err != nil {
+				conn.CloseDetail(websocket.StatusProtocolError, fmt.Sprintf("error: %s", err))
+				log.Print(err)
+			}
+		}()
+		break
+	case iceCandidateType:
+		go func() {
+			err := forwardIceCandidates(msg, conn)
+			if err != nil {
+				conn.CloseDetail(websocket.StatusProtocolError, fmt.Sprintf("error: %s", err))
+				log.Print(err)
+			}
+		}()
+		break
 	default:
 		conn.CloseDetail(websocket.StatusNotAcceptable, "invalid message")
 		log.Printf("Invalid signalingMessage: %s", msg.Type)
@@ -82,33 +103,84 @@ func createOffer(msg signalingMessage, conn *websocket.Conn) error {
 	if err != nil {
 		return err
 	}
-	sessions[fmt.Sprintf("%s:offer", passphrase)] = session{
+	sessions[passphrase] = session{
 		id:         conn.ID(),
 		passphrase: passphrase,
 		sdp:        *msg.Payload,
+		sConn:      conn,
 	}
-	conn.Write([]byte(passphrase))
-	for range 120 {
-		session, found := sessions[fmt.Sprintf("%v:answer", msg.Passphrase)]
-		if found {
-			conn.Write([]byte(session.sdp))
-			return nil
-		}
-		time.Sleep(1 * time.Second)
+
+	ans, err := sonic.Marshal(signalingMessage{
+		Type:       "passphrase",
+		Passphrase: &passphrase,
+	})
+	if err != nil {
+		return err
 	}
-	delete(sessions, passphrase)
-	return errors.New("timed out waiting for answer")
+	_, err = conn.Write([]byte(ans))
+	return err
 }
 
-func createConnReq(msg signalingMessage, conn *websocket.Conn) error {
-	sessions[fmt.Sprintf("%v:request", msg.Passphrase)] = session{
-		id:         conn.ID(),
-		passphrase: *msg.Passphrase,
-	}
-	offer, found := sessions[fmt.Sprintf("%v:offer", msg.Passphrase)]
+func processConnReq(msg signalingMessage, conn *websocket.Conn) error {
+	sess, found := sessions[*msg.Passphrase]
 	if !found {
 		return errors.New("session not found")
 	}
-	_, err := conn.Write([]byte(offer.sdp))
+	ans, err := sonic.Marshal(signalingMessage{
+		Type:    "offer",
+		Payload: &sess.sdp,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = conn.Write([]byte(ans))
+
+	sessions[*msg.Passphrase] = session{
+		id:         sess.id,
+		passphrase: sess.passphrase,
+		sConn:      sess.sConn,
+		rConn:      conn,
+	}
 	return err
+}
+
+func processAnswer(msg signalingMessage) error {
+	sess, found := sessions[*msg.Passphrase]
+	if !found {
+		return errors.New("session not found")
+	}
+	ans, err := sonic.Marshal(signalingMessage{
+		Type:    "answer",
+		Payload: msg.Payload,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = sess.sConn.Write([]byte(ans))
+	return err
+}
+
+func forwardIceCandidates(msg signalingMessage, conn *websocket.Conn) error {
+	sess, found := sessions[*msg.Passphrase]
+	if !found {
+		return errors.New("session not found")
+	}
+
+	ans, err := sonic.Marshal(signalingMessage{
+		Type:    "ice-candidate",
+		Payload: msg.Payload,
+	})
+	if err != nil {
+		return err
+	}
+
+	if sess.sConn == conn {
+		sess.rConn.Write([]byte(ans))
+	} else if sess.rConn == conn {
+		sess.sConn.Write([]byte(ans))
+	} else {
+		return errors.New("stranger connection")
+	}
+
+	return nil
 }
