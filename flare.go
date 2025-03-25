@@ -2,10 +2,12 @@ package main
 
 import (
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/dgrr/websocket"
@@ -16,7 +18,7 @@ const port = "8080"
 
 var wordlist, wlerr = readWordlist("eff_large_wordlist.txt")
 
-var sessions = make(map[uint64]session)
+var sessions = make(map[string]session)
 
 func init() {
 	if wlerr != nil {
@@ -56,7 +58,19 @@ func dataHandler(conn *websocket.Conn, isBin bool, data []byte) {
 
 	switch msg.Type {
 	case offerType:
-		go createOffer(msg, conn)
+		go func() {
+			err := createOffer(msg, conn)
+			if err != nil {
+				conn.CloseDetail(websocket.StatusProtocolError, err.Error())
+			}
+		}()
+	case connectionRequestType:
+		go func() {
+			err := createConnReq(msg, conn)
+			if err != nil {
+				conn.CloseDetail(websocket.StatusProtocolError, fmt.Sprintf("error: %s", err))
+			}
+		}()
 	default:
 		conn.CloseDetail(websocket.StatusNotAcceptable, "invalid message")
 		log.Printf("Invalid signalingMessage: %s", msg.Type)
@@ -68,10 +82,33 @@ func createOffer(msg signalingMessage, conn *websocket.Conn) error {
 	if err != nil {
 		return err
 	}
-	sessions[conn.ID()] = session{
+	sessions[fmt.Sprintf("%s:offer", passphrase)] = session{
 		id:         conn.ID(),
 		passphrase: passphrase,
 		sdp:        *msg.Payload,
 	}
-	return nil
+	conn.Write([]byte(passphrase))
+	for range 120 {
+		session, found := sessions[fmt.Sprintf("%v:answer", msg.Passphrase)]
+		if found {
+			conn.Write([]byte(session.sdp))
+			return nil
+		}
+		time.Sleep(1 * time.Second)
+	}
+	delete(sessions, passphrase)
+	return errors.New("timed out waiting for answer")
+}
+
+func createConnReq(msg signalingMessage, conn *websocket.Conn) error {
+	sessions[fmt.Sprintf("%v:request", msg.Passphrase)] = session{
+		id:         conn.ID(),
+		passphrase: *msg.Passphrase,
+	}
+	offer, found := sessions[fmt.Sprintf("%v:offer", msg.Passphrase)]
+	if !found {
+		return errors.New("session not found")
+	}
+	_, err := conn.Write([]byte(offer.sdp))
+	return err
 }
