@@ -5,7 +5,7 @@ go 1.23.7
 require (
 	github.com/bytedance/sonic v1.13.2
 	github.com/dgrr/websocket v0.1.1
-	github.com/valyala/fasthttp v1.59.0
+	github.com/valyala/fasthttp v1.60.0
 )
 
 require (
