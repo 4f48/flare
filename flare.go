@@ -106,6 +106,7 @@ func disconnectHandler(conn *websocket.Conn, err error) {
 		passphrase, found := getPassphraseForConn(conn)
 		if found {
 			// If found directly, we can look up the session and clean up
+			sessionsMutex.Lock()
 			session, exists := sessions[passphrase]
 			if exists {
 				if session.sConn == conn {
@@ -121,10 +122,13 @@ func disconnectHandler(conn *websocket.Conn, err error) {
 				}
 				delete(sessions, passphrase)
 			}
+			sessionsMutex.Unlock()
+
 			// Unregister this connection
 			unregisterConnection(conn)
 		} else {
 			// If not found in our mapping, we need to scan all sessions
+			sessionsMutex.Lock()
 			for passphrase, session := range sessions {
 				if session.sConn == conn || session.rConn == conn {
 					if session.sConn == conn {
@@ -145,6 +149,7 @@ func disconnectHandler(conn *websocket.Conn, err error) {
 					break
 				}
 			}
+			sessionsMutex.Unlock()
 		}
 	}()
 }

@@ -24,6 +24,8 @@ func handleOffer(data []byte, conn *websocket.Conn) error {
 	if err != nil {
 		return err
 	}
+
+	sessionsMutex.Lock()
 	sessions[passphrase] = Session{
 		Id:         conn.ID(),
 		Passphrase: passphrase,
@@ -31,6 +33,7 @@ func handleOffer(data []byte, conn *websocket.Conn) error {
 		sConn:      conn,
 		iceBuffer:  make([]string, 0),
 	}
+	sessionsMutex.Unlock()
 
 	registerConnection(conn, passphrase)
 
@@ -54,7 +57,11 @@ func handleConnReq(data []byte, conn *websocket.Conn) error {
 	if msg.Type != connReqType {
 		return errors.New("invalid connection request")
 	}
+
+	sessionsMutex.Lock()
 	session, found := sessions[msg.Passphrase]
+	sessionsMutex.Unlock()
+
 	if !found {
 		return errors.New(fmt.Sprintf("session not found: %s", msg.Passphrase))
 	}
@@ -68,8 +75,10 @@ func handleConnReq(data []byte, conn *websocket.Conn) error {
 	}
 	_, err = conn.Write([]byte(ans))
 
+	sessionsMutex.Lock()
 	session.rConn = conn
 	sessions[msg.Passphrase] = session
+	sessionsMutex.Unlock()
 
 	registerConnection(conn, msg.Passphrase)
 
@@ -107,7 +116,10 @@ func handleAnswer(data []byte, conn *websocket.Conn) error {
 		return errors.New("session not found for connection")
 	}
 
+	sessionsMutex.Lock()
 	session, found := sessions[passphrase]
+	sessionsMutex.Unlock()
+
 	if !found {
 		return errors.New("session not found")
 	}
@@ -133,7 +145,10 @@ func handleIceCandidate(data []byte, conn *websocket.Conn) error {
 		return errors.New("session not found for connection")
 	}
 
+	sessionsMutex.Lock()
 	session, found := sessions[passphrase]
+	sessionsMutex.Unlock()
+
 	if !found {
 		return errors.New("session not found")
 	}
@@ -144,7 +159,11 @@ func handleIceCandidate(data []byte, conn *websocket.Conn) error {
 		if session.rConn == nil {
 			// Store the candidate in the buffer
 			session.iceBuffer = append(session.iceBuffer, msg.Candidate)
+
+			sessionsMutex.Lock()
 			sessions[passphrase] = session
+			sessionsMutex.Unlock()
+
 			return nil
 		}
 

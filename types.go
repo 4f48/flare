@@ -1,8 +1,12 @@
 package main
 
 import (
+	"sync"
+
 	"github.com/dgrr/websocket"
 )
+
+var sessionsMutex sync.Mutex
 
 type Session struct {
 	Id         uint64
