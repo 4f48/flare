@@ -77,7 +77,7 @@ func dataHandler(conn *websocket.Conn, isBin bool, data []byte) {
 		break
 	case answerType:
 		go func() {
-			err := handleAnswer(data)
+			err := handleAnswer(data, conn) // Pass the connection
 			if err != nil {
 				conn.CloseDetail(websocket.StatusProtocolError, fmt.Sprintf("error: %s", err))
 				log.Print(err)
@@ -86,7 +86,7 @@ func dataHandler(conn *websocket.Conn, isBin bool, data []byte) {
 		break
 	case iceCandidateType:
 		go func() {
-			err := handleIceCandidate(data, conn)
+			err := handleIceCandidate(data, conn) // Pass the connection
 			if err != nil {
 				conn.CloseDetail(websocket.StatusProtocolError, fmt.Sprintf("error: %s", err))
 				log.Print(err)
@@ -102,19 +102,48 @@ func dataHandler(conn *websocket.Conn, isBin bool, data []byte) {
 func disconnectHandler(conn *websocket.Conn, err error) {
 	log.Printf("Connection from %s closed: %v", conn.RemoteAddr(), err)
 	go func() {
-		for passphrase, session := range sessions {
-			if session.sConn == conn || session.rConn == conn {
+		// First check if the connection has a passphrase
+		passphrase, found := getPassphraseForConn(conn)
+		if found {
+			// If found directly, we can look up the session and clean up
+			session, exists := sessions[passphrase]
+			if exists {
 				if session.sConn == conn {
 					if session.rConn != nil {
 						session.rConn.CloseDetail(websocket.StatusGoAway, "sender disconnected")
+						unregisterConnection(session.rConn)
+					}
+				} else if session.rConn == conn {
+					if session.sConn != nil {
+						session.sConn.CloseDetail(websocket.StatusGoAway, "receiver disconnected")
+						unregisterConnection(session.sConn)
 					}
 				}
-				if session.rConn == conn {
-					session.rConn.CloseDetail(websocket.StatusGoAway, "receiver disconnected")
-				}
-
 				delete(sessions, passphrase)
-				break
+			}
+			// Unregister this connection
+			unregisterConnection(conn)
+		} else {
+			// If not found in our mapping, we need to scan all sessions
+			for passphrase, session := range sessions {
+				if session.sConn == conn || session.rConn == conn {
+					if session.sConn == conn {
+						unregisterConnection(session.sConn)
+						if session.rConn != nil {
+							session.rConn.CloseDetail(websocket.StatusGoAway, "sender disconnected")
+							unregisterConnection(session.rConn)
+						}
+					}
+					if session.rConn == conn {
+						unregisterConnection(session.rConn)
+						if session.sConn != nil {
+							session.sConn.CloseDetail(websocket.StatusGoAway, "sender disconnected")
+							unregisterConnection(session.sConn)
+						}
+					}
+					delete(sessions, passphrase)
+					break
+				}
 			}
 		}
 	}()

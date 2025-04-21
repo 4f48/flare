@@ -49,13 +49,11 @@ type PassphraseMsg struct {
 }
 
 type AnswerMsg struct {
-	Type       messageType `json:"type"`
-	Passphrase string      `json:"passphrase"`
-	SDP        string      `json:"sdp"`
+	Type messageType `json:"type"`
+	SDP  string      `json:"sdp"`
 }
 
 type IceCandidateMsg struct {
-	Type       messageType `json:"type"`
-	Passphrase string      `json:"passphrase"`
-	Candidate  string      `json:"candidate"`
+	Type      messageType `json:"type"`
+	Candidate string      `json:"candidate"`
 }
