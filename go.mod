@@ -1,11 +1,11 @@
 module flare
 
-go 1.23.7
+go 1.24.2
 
 require (
 	github.com/bytedance/sonic v1.13.2
 	github.com/dgrr/websocket v0.1.1
-	github.com/valyala/fasthttp v1.60.0
+	github.com/valyala/fasthttp v1.61.0
 )
 
 require (
