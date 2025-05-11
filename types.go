@@ -59,5 +59,5 @@ type AnswerMsg struct {
 
 type IceCandidateMsg struct {
 	Type      messageType `json:"type"`
-	Candidate string      `json:"candidate"`
+	Candidate string      `json:"candidate,omitempty"`
 }
