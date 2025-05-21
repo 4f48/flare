@@ -1,31 +1,31 @@
-use axum::{
-    Router,
-    extract::{
-        ConnectInfo, MatchedPath, WebSocketUpgrade,
-        ws::{Message, WebSocket},
-    },
-    http::Request,
-    response::IntoResponse,
-    routing::get,
-};
-use axum_extra::TypedHeader;
-use clap::Parser;
-use std::{net::SocketAddr, ops::ControlFlow};
-use tokio::net::TcpListener;
-use tower_http::trace::TraceLayer;
-use tracing::{debug, info};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+mod diceware;
+mod types;
+mod websocket;
 
-#[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-struct Args {
-    #[arg(short, long, default_value = "8080")]
-    port: u16,
-}
+use axum::{Router, extract::MatchedPath, http::Request, routing::get};
+use clap::Parser;
+use dashmap::DashMap;
+use diceware::{generate_code, read_word_list};
+use std::sync::Arc;
+use std::{net::SocketAddr, time::Duration};
+use tokio::net::TcpListener;
+use tokio::signal;
+use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
+use tracing::info;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use types::{AppState, Args, Sessions};
 
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
+
+    let sessions: Sessions = Arc::new(DashMap::new());
+    let words = read_word_list("eff_large_wordlist.txt").expect("couldn't parse wordlist");
+
+    let state = AppState {
+        sessions: sessions.clone(),
+        wordlist: words,
+    };
 
     tracing_subscriber::registry()
         .with(
@@ -40,24 +40,25 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let app =
-        Router::new()
-            .route("/", get(handler))
-            .layer(
-                TraceLayer::new_for_http().make_span_with(|request: &Request<_>| {
-                    let matched_path = request
-                        .extensions()
-                        .get::<MatchedPath>()
-                        .map(MatchedPath::as_str);
+    let app = Router::new()
+        .route("/", get(websocket::handler))
+        .with_state(state)
+        .layer((
+            TraceLayer::new_for_http().make_span_with(|request: &Request<_>| {
+                let matched_path = request
+                    .extensions()
+                    .get::<MatchedPath>()
+                    .map(MatchedPath::as_str);
 
-                    tracing::info_span!(
-                        "http_request",
-                        method = ?request.method(),
-                        matched_path,
-                        some_other_field = tracing::field::Empty,
-                    )
-                }),
-            );
+                tracing::info_span!(
+                    "http_request",
+                    method = ?request.method(),
+                    matched_path,
+                    some_other_field = tracing::field::Empty,
+                )
+            }),
+            TimeoutLayer::new(Duration::from_secs(60)),
+        ));
 
     let listener = TcpListener::bind(format!("0.0.0.0:{}", args.port))
         .await
@@ -67,56 +68,35 @@ async fn main() {
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(shutdown_signal())
     .await
     .unwrap();
 }
 
-async fn handler(
-    ws: WebSocketUpgrade,
-    user_agent: Option<TypedHeader<headers::UserAgent>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-) -> impl IntoResponse {
-    let user_agent = if let Some(TypedHeader(user_agent)) = user_agent {
-        user_agent.to_string()
-    } else {
-        String::from("unknown")
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("failed to install ctrl+c handler");
     };
-    debug!("{user_agent} connected from {addr}");
-    ws.on_upgrade(move |socket| handle_socket(socket, addr))
-}
 
-async fn handle_socket(mut socket: WebSocket, addr: SocketAddr) {
-    if let Some(msg) = socket.recv().await {
-        if let Ok(msg) = msg {
-            if process_message(msg, addr, socket).await.is_break() {}
-        } else {
-            println!("client {addr} abruptly disconnected");
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {
+            info!("Shutting down...");
+        },
+        _ = terminate => {
+            info!("Shutting down...");
         }
     }
-}
-
-async fn process_message(
-    msg: Message,
-    addr: SocketAddr,
-    mut socket: WebSocket,
-) -> ControlFlow<(), ()> {
-    match msg {
-        Message::Text(t) => {
-            info!("{addr} > {t}");
-            socket.send(Message::text(t)).await.unwrap_or(());
-        }
-        Message::Close(c) => {
-            if let Some(cf) = c {
-                debug!(
-                    "{addr} is disconnecting with code {} and reason \"{}\"",
-                    cf.code, cf.reason
-                );
-            } else {
-                debug!("{addr} is disconnecting")
-            }
-            return ControlFlow::Break(());
-        }
-        _ => (),
-    }
-    ControlFlow::Continue(())
 }
